@@ -1,0 +1,10 @@
+[
+  { "type": "fill", "selector": "#activityInput", "value": "Проверка @ тест" },
+  { "type": "click", "selector": "[data-act=\"start\"]" },
+  { "type": "assert", "selector": ".timer-activity", "property": "text", "equals": "Проверка @ тест" },
+  { "type": "click", "selector": "[data-act=\"stop\"]" },
+  { "type": "assert", "selector": "#todayList .entry-activity", "property": "text", "equals": "Проверка @ тест" },
+  { "type": "click", "selector": "#tab-export" },
+  { "type": "assert", "selector": "#view-export h1", "property": "text", "equals": "Выгрузка" },
+  { "type": "assert", "selector": "#exportBtn", "property": "text", "equals": "Скачать CSV" }
+]

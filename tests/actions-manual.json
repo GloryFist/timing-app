@@ -1,0 +1,10 @@
+[
+  { "type": "click", "selector": "#addManual" },
+  { "type": "fill", "selector": "#fActivity", "value": "Ручной интервал" },
+  { "type": "fill", "selector": "#fStart", "value": "08:00" },
+  { "type": "fill", "selector": "#fEnd", "value": "09:30" },
+  { "type": "click", "selector": "#entryForm button[type=\"submit\"]" },
+  { "type": "assert", "selector": "#todayList .entry-activity", "property": "text", "equals": "Ручной интервал" },
+  { "type": "click", "selector": "#tab-journal" },
+  { "type": "assert", "selector": "#journalList .entry-activity", "property": "text", "equals": "Ручной интервал" }
+]

@@ -1,0 +1,518 @@
+Attribute VB_Name = "ImportTiming"
+Option Explicit
+
+' Импорт выгрузки из приложения «Тайминг».
+' CSV: Дата;Начало;Конец;Деятельность;Примечание, кодировка UTF-8, разделитель «;».
+' Запуск: Разработчик -> Макросы -> ИмпортИзCSV (или кнопка на листе).
+' Строки вставляются в таблицу tblData по хронологии, формулы таблицы подтягиваются,
+' после импорта запускается классификация AutoFillingCat.
+
+Private Const TABLE_NAME As String = "tblData"
+Private Const CSV_DELIM As String = ";"
+
+Public Sub ИмпортИзCSV()
+    Dim fd As Object
+    Dim report As String
+
+    Set fd = Application.FileDialog(3)
+    fd.Title = "Выберите CSV из приложения «Тайминг»"
+    fd.Filters.Clear
+    fd.Filters.Add "CSV-файлы", "*.csv"
+    fd.AllowMultiSelect = False
+    If fd.Show <> -1 Then Exit Sub
+
+    report = ИмпортироватьФайл(fd.SelectedItems(1))
+    MsgBox report, vbInformation, "Импорт из Тайминга"
+End Sub
+
+Public Function ИмпортироватьФайл(ByVal Путь As String) As String
+    Dim text As String
+    Dim rows As Collection
+    Dim i As Long, firstRow As Long
+    Dim added As Long, dup As Long, skipped As Long, bad As Long
+    Dim details As String
+    Dim prevScreen As Boolean
+    Dim prevCalc As XlCalculation
+    Dim busy As Boolean
+    Dim catRan As Boolean
+    Dim catText As String
+
+    Dim ws As Worksheet
+    Dim tbl As ListObject
+    Dim lr As ListRow
+    Dim r As Variant
+    Dim d As Date
+    Dim hhmm As Long, hhmmEnd As Long
+    Dim hasEnd As Boolean
+    Dim activity As String, note As String
+    Dim yearKey As String
+    Dim pos As Long
+    Dim key As String
+    Dim keysByYear As Object
+    Dim keys As Object
+    Dim sheetsByYear As Object
+    Dim sh As Worksheet
+    Dim touchedByYear As Object
+    Dim dayDict As Object
+    Dim yk As Variant
+    Dim dk As Variant
+
+    On Error GoTo Fail
+
+    If Len(Dir$(Путь)) = 0 Then
+        ИмпортироватьФайл = "Файл не найден: " & Путь
+        Exit Function
+    End If
+
+    text = ReadUtf8(Путь)
+    If Len(text) = 0 Then
+        ИмпортироватьФайл = "Файл пуст."
+        Exit Function
+    End If
+
+    Set rows = ParseCsv(text, CSV_DELIM)
+    If rows.Count = 0 Then
+        ИмпортироватьФайл = "В файле нет строк."
+        Exit Function
+    End If
+
+    Set sheetsByYear = CreateObject("Scripting.Dictionary")
+    For Each sh In ThisWorkbook.Worksheets
+        If Len(sh.Name) = 4 Then
+            If IsNumeric(sh.Name) Then
+                If Not sheetsByYear.Exists(sh.Name) Then sheetsByYear.Add sh.Name, sh
+            End If
+        End If
+    Next sh
+
+    Set keysByYear = CreateObject("Scripting.Dictionary")
+    Set touchedByYear = CreateObject("Scripting.Dictionary")
+
+    prevScreen = Application.ScreenUpdating
+    prevCalc = Application.Calculation
+    busy = True
+    Application.ScreenUpdating = False
+    Application.Calculation = xlCalculationManual
+
+    firstRow = 1
+    r = rows(1)
+    If UBound(r) >= 0 Then
+        If LCase$(Trim$(CStr(r(0)))) = LCase$("Дата") Then firstRow = 2
+    End If
+
+    For i = firstRow To rows.Count
+        r = rows(i)
+
+        If UBound(r) < 3 Then
+            bad = bad + 1
+            details = details & vbLf & "Строка " & i & ": мало столбцов."
+            GoTo NextRow
+        End If
+
+        If Not ParseDateRu(CStr(r(0)), d) Then
+            bad = bad + 1
+            details = details & vbLf & "Строка " & i & ": неверная дата «" & CStr(r(0)) & "»."
+            GoTo NextRow
+        End If
+
+        If Not ParseTimeHHMM(CStr(r(1)), hhmm) Then
+            bad = bad + 1
+            details = details & vbLf & "Строка " & i & ": неверное начало «" & CStr(r(1)) & "»."
+            GoTo NextRow
+        End If
+
+        hasEnd = (Len(Trim$(CStr(r(2)))) > 0)
+        hhmmEnd = 0
+        If hasEnd Then
+            If Not ParseTimeHHMM(CStr(r(2)), hhmmEnd) Then
+                bad = bad + 1
+                details = details & vbLf & "Строка " & i & ": неверное окончание «" & CStr(r(2)) & "»."
+                GoTo NextRow
+            End If
+            If hhmmEnd < hhmm Then
+                bad = bad + 1
+                details = details & vbLf & "Строка " & i & ": окончание раньше начала."
+                GoTo NextRow
+            End If
+        End If
+
+        activity = Trim$(CStr(r(3)))
+        If Len(activity) = 0 Then
+            bad = bad + 1
+            details = details & vbLf & "Строка " & i & ": пустая деятельность."
+            GoTo NextRow
+        End If
+
+        note = ""
+        If UBound(r) >= 4 Then note = CStr(r(4))
+
+        yearKey = CStr(Year(d))
+        If Not sheetsByYear.Exists(yearKey) Then
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        Set ws = sheetsByYear(yearKey)
+        Set tbl = Nothing
+        On Error Resume Next
+        Set tbl = ws.ListObjects(TABLE_NAME)
+        On Error GoTo Fail
+        If tbl Is Nothing Then
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        If Not keysByYear.Exists(yearKey) Then
+            Set keys = BuildKeys(tbl)
+            keysByYear.Add yearKey, keys
+        Else
+            Set keys = keysByYear(yearKey)
+        End If
+
+        key = KeyOf(d, hhmm, activity)
+        If keys.Exists(key) Then
+            dup = dup + 1
+            GoTo NextRow
+        End If
+
+        pos = FindInsertPosition(tbl, d, hhmm)
+        If pos < 1 Then pos = 1
+        If pos > tbl.ListRows.Count + 1 Then pos = tbl.ListRows.Count + 1
+
+        Set lr = tbl.ListRows.Add(pos)
+        With lr.Range
+            .Cells(1, 2).Value = d
+            .Cells(1, 3).Value = hhmm
+            If hasEnd Then .Cells(1, 5).Value = hhmmEnd
+            .Cells(1, 10).Value = activity
+            If Len(note) > 0 Then .Cells(1, 15).Value = note
+        End With
+
+        EnsureRowFormulas tbl, lr
+        keys.Add key, True
+
+        If Not touchedByYear.Exists(yearKey) Then
+            touchedByYear.Add yearKey, CreateObject("Scripting.Dictionary")
+        End If
+        Set dayDict = touchedByYear(yearKey)
+        dayDict(Format$(d, "yyyy-mm-dd")) = d
+
+        added = added + 1
+
+NextRow:
+    Next i
+
+    For Each yk In touchedByYear.Keys
+        Set ws = sheetsByYear(CStr(yk))
+        Set tbl = ws.ListObjects(TABLE_NAME)
+        Set dayDict = touchedByYear(CStr(yk))
+        For Each dk In dayDict.Keys
+            RebuildDayFormulas tbl, CDate(dayDict(dk))
+        Next dk
+    Next yk
+
+    Application.Calculation = xlCalculationAutomatic
+    If added > 0 Then
+        ws.Activate
+        catRan = False
+        On Error Resume Next
+        Application.Run "'" & Replace(ThisWorkbook.Name, "'", "''") & "'!AutoFillingCat.AutoFillingCat"
+        If Err.Number = 0 Then
+            catRan = True
+        Else
+            Err.Clear
+            Application.Run "'" & Replace(ThisWorkbook.Name, "'", "''") & "'!AutoFillingCat"
+            If Err.Number = 0 Then
+                catRan = True
+            Else
+                Err.Clear
+            End If
+        End If
+        On Error GoTo Fail
+    End If
+    Application.Calculate
+
+    If added = 0 Then
+        catText = "не требуется"
+    ElseIf catRan Then
+        catText = "выполнена"
+    Else
+        catText = "не выполнена (запустите AutoFillingCat вручную)"
+    End If
+
+    Application.ScreenUpdating = prevScreen
+    Application.Calculation = prevCalc
+    busy = False
+
+    ИмпортироватьФайл = "Импорт завершён." & vbLf & _
+        "Добавлено: " & added & vbLf & _
+        "Пропущено дублей: " & dup & vbLf & _
+        "Пропущено (нет листа года): " & skipped & vbLf & _
+        "Ошибок в строках: " & bad & vbLf & _
+        "Классификация: " & catText
+
+    If Len(details) > 0 Then
+        ИмпортироватьФайл = ИмпортироватьФайл & vbLf & vbLf & "Подробности:" & details
+    End If
+    Exit Function
+
+Fail:
+    If busy Then
+        On Error Resume Next
+        Application.ScreenUpdating = prevScreen
+        Application.Calculation = prevCalc
+        On Error GoTo 0
+    End If
+    ИмпортироватьФайл = "Ошибка импорта: " & Err.Description
+End Function
+
+Private Function ReadUtf8(ByVal filePath As String) As String
+    Dim st As Object
+    Set st = CreateObject("ADODB.Stream")
+    st.Type = 2
+    st.Charset = "utf-8"
+    st.Open
+    st.LoadFromFile filePath
+    ReadUtf8 = st.ReadText(-1)
+    st.Close
+    If Len(ReadUtf8) > 0 Then
+        If Left$(ReadUtf8, 1) = ChrW(&HFEFF) Then ReadUtf8 = Mid$(ReadUtf8, 2)
+    End If
+End Function
+
+Private Function ParseCsv(ByVal text As String, ByVal delim As String) As Collection
+    Dim result As Collection
+    Dim row As Collection
+    Dim field As String
+    Dim ch As String
+    Dim i As Long, n As Long, dLen As Long
+    Dim inQuotes As Boolean
+
+    Set result = New Collection
+    Set row = New Collection
+
+    n = Len(text)
+    dLen = Len(delim)
+    i = 1
+    inQuotes = False
+
+    Do While i <= n
+        ch = Mid$(text, i, 1)
+        If inQuotes Then
+            If ch = """" Then
+                If Mid$(text, i + 1, 1) = """" Then
+                    field = field & """"
+                    i = i + 2
+                Else
+                    inQuotes = False
+                    i = i + 1
+                End If
+            ElseIf ch = vbCr Then
+                If Mid$(text, i + 1, 1) = vbLf Then i = i + 1
+                field = field & vbLf
+                i = i + 1
+            Else
+                field = field & ch
+                i = i + 1
+            End If
+        Else
+            If ch = """" Then
+                inQuotes = True
+                i = i + 1
+            ElseIf ch = vbCr Then
+                i = i + 1
+            ElseIf ch = vbLf Then
+                row.Add field
+                AppendRow result, row
+                Set row = New Collection
+                field = ""
+                i = i + 1
+            ElseIf Mid$(text, i, dLen) = delim Then
+                row.Add field
+                field = ""
+                i = i + dLen
+            Else
+                field = field & ch
+                i = i + 1
+            End If
+        End If
+    Loop
+
+    If Len(field) > 0 Or row.Count > 0 Then
+        row.Add field
+        AppendRow result, row
+    End If
+
+    Set ParseCsv = result
+End Function
+
+Private Sub AppendRow(ByVal result As Collection, ByVal row As Collection)
+    Dim arr() As String
+    Dim i As Long
+    Dim hasData As Boolean
+
+    If row.Count = 0 Then Exit Sub
+
+    For i = 1 To row.Count
+        If Len(Trim$(CStr(row(i)))) > 0 Then
+            hasData = True
+            Exit For
+        End If
+    Next i
+    If Not hasData Then Exit Sub
+
+    ReDim arr(0 To row.Count - 1)
+    For i = 1 To row.Count
+        arr(i - 1) = CStr(row(i))
+    Next i
+    result.Add arr
+End Sub
+
+Private Function ParseDateRu(ByVal s As String, ByRef d As Date) As Boolean
+    Dim p() As String
+    Dim dd As Long, mm As Long, yy As Long
+
+    p = Split(Trim$(s), ".")
+    If UBound(p) <> 2 Then Exit Function
+    If Not IsNumeric(p(0)) Or Not IsNumeric(p(1)) Or Not IsNumeric(p(2)) Then Exit Function
+
+    dd = CLng(p(0))
+    mm = CLng(p(1))
+    yy = CLng(p(2))
+    If yy < 2000 Or yy > 2100 Then Exit Function
+
+    On Error Resume Next
+    d = DateSerial(yy, mm, dd)
+    If Err.Number <> 0 Then
+        Err.Clear
+        On Error GoTo 0
+        Exit Function
+    End If
+    On Error GoTo 0
+
+    If Day(d) <> dd Or Month(d) <> mm Or Year(d) <> yy Then Exit Function
+    ParseDateRu = True
+End Function
+
+Private Function ParseTimeHHMM(ByVal s As String, ByRef v As Long) As Boolean
+    Dim p() As String
+    Dim hh As Long, mm As Long
+
+    p = Split(Trim$(s), ":")
+    If UBound(p) <> 1 Then Exit Function
+    If Not IsNumeric(p(0)) Or Not IsNumeric(p(1)) Then Exit Function
+
+    hh = CLng(p(0))
+    mm = CLng(p(1))
+    If hh < 0 Or hh > 23 Or mm < 0 Or mm > 59 Then Exit Function
+
+    v = hh * 100 + mm
+    ParseTimeHHMM = True
+End Function
+
+Private Function KeyOf(ByVal d As Date, ByVal hhmm As Long, ByVal activity As String) As String
+    KeyOf = Format$(d, "yyyy-mm-dd") & "|" & CStr(hhmm) & "|" & LCase$(Trim$(activity))
+End Function
+
+Private Function BuildKeys(ByVal tbl As ListObject) As Object
+    Dim dict As Object
+    Dim i As Long
+    Dim r As Range
+    Dim d As Date
+    Dim hhmm As Long
+    Dim activity As String
+
+    Set dict = CreateObject("Scripting.Dictionary")
+
+    For i = 1 To tbl.ListRows.Count
+        Set r = tbl.ListRows(i).Range
+        If IsDate(r.Cells(1, 2).Value) Then
+            d = Int(CDate(r.Cells(1, 2).Value))
+            hhmm = CLng(Val(r.Cells(1, 3).Value))
+            activity = LCase$(Trim$(CStr(r.Cells(1, 10).Value)))
+            If hhmm > 0 And Len(activity) > 0 Then
+                dict(KeyOf(d, hhmm, activity)) = True
+            End If
+        End If
+    Next i
+
+    Set BuildKeys = dict
+End Function
+
+Private Function FindInsertPosition(ByVal tbl As ListObject, ByVal d As Date, ByVal hhmm As Long) As Long
+    Dim i As Long
+    Dim r As Range
+    Dim rd As Date
+    Dim rc As Long
+
+    For i = tbl.ListRows.Count To 1 Step -1
+        Set r = tbl.ListRows(i).Range
+        If IsDate(r.Cells(1, 2).Value) Then
+            rd = Int(CDate(r.Cells(1, 2).Value))
+            rc = CLng(Val(r.Cells(1, 3).Value))
+            If rd < d Or (rd = d And rc <= hhmm) Then
+                FindInsertPosition = i + 1
+                Exit Function
+            End If
+        End If
+    Next i
+
+    FindInsertPosition = 1
+End Function
+
+Private Sub EnsureRowFormulas(ByVal tbl As ListObject, ByVal lr As ListRow)
+    Dim cols As Variant
+    Dim j As Long
+    Dim c As Long
+    Dim src As Range
+
+    cols = Array(1, 4, 6, 7, 8, 26, 27)
+
+    For j = LBound(cols) To UBound(cols)
+        c = cols(j)
+        If Not lr.Range.Cells(1, c).HasFormula Then
+            Set src = Nothing
+            If lr.Index > 1 Then
+                Set src = tbl.ListRows(lr.Index - 1).Range.Cells(1, c)
+            ElseIf tbl.ListRows.Count > 1 Then
+                Set src = tbl.ListRows(lr.Index + 1).Range.Cells(1, c)
+            End If
+            If Not src Is Nothing Then
+                If src.HasFormula Then lr.Range.Cells(1, c).FormulaR1C1 = src.FormulaR1C1
+            End If
+        End If
+    Next j
+End Sub
+
+Private Sub RebuildDayFormulas(ByVal tbl As ListObject, ByVal d As Date)
+    Dim i As Long
+    Dim firstRow As Long
+    Dim lastRow As Long
+    Dim r As Range
+    Dim rr As Long
+    Dim fZ As String
+    Dim fAA As String
+
+    For i = 1 To tbl.ListRows.Count
+        Set r = tbl.ListRows(i).Range
+        If IsDate(r.Cells(1, 2).Value) Then
+            If Int(CDate(r.Cells(1, 2).Value)) = d Then
+                If firstRow = 0 Then firstRow = i
+                lastRow = i
+            End If
+        End If
+    Next i
+
+    If firstRow = 0 Then Exit Sub
+
+    For i = firstRow To lastRow
+        Set r = tbl.ListRows(i).Range
+        rr = r.Row
+
+        fZ = "=IF(B" & rr & "=B" & (rr - 1) & ",IF(Q" & rr & "<>""Личное"",Z" & (rr - 1) & "+G" & rr & ",Z" & (rr - 1) & "),[@[Продолжительность, мин]])"
+        fAA = "=IFERROR(IF(B" & (rr + 1) & ">B" & rr & ",Z" & rr & "/60,""""),Z" & rr & "/60)"
+
+        r.Cells(1, 26).Formula = fZ
+        r.Cells(1, 27).Formula = fAA
+    Next i
+End Sub

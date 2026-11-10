@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#F5F2EA" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121614" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Учёт времязатрат с выгрузкой в книгу «Тайминг».">
+<title>Тайминг</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Тайминг</div>
+    <button class="install" id="installBtn" type="button" hidden>Установить</button>
+  </header>
+
+  <main>
+    <section class="view" id="view-today">
+      <div class="day-head">
+        <div>
+          <p class="eyebrow" id="todayWeekday">—</p>
+          <h1 id="todayDate">Сегодня</h1>
+        </div>
+        <div class="day-total">
+          <strong id="dayTotal">0 мин</strong>
+          <span id="dayCount">нет записей</span>
+        </div>
+      </div>
+
+      <div class="strip-wrap">
+        <div class="strip" id="dayStrip" aria-hidden="true"></div>
+        <div class="strip-scale" aria-hidden="true">
+          <span>0</span><span>6</span><span>12</span><span>18</span><span>24</span>
+        </div>
+      </div>
+
+      <div class="timer" id="timerCard"></div>
+
+      <div class="list-head">
+        <h2>Интервалы</h2>
+        <button class="text-btn" id="addManual" type="button">+ Добавить</button>
+      </div>
+      <ul class="entries" id="todayList"></ul>
+    </section>
+
+    <section class="view" id="view-journal" hidden>
+      <div class="month-bar">
+        <button class="icon-btn" id="monthPrev" type="button" aria-label="Предыдущий месяц">‹</button>
+        <div class="month-title">
+          <strong id="monthLabel">—</strong>
+          <span id="monthTotal">0 мин</span>
+        </div>
+        <button class="icon-btn" id="monthNext" type="button" aria-label="Следующий месяц">›</button>
+      </div>
+      <div id="journalList"></div>
+    </section>
+
+    <section class="view" id="view-export" hidden>
+      <h1 class="view-title">Выгрузка</h1>
+      <p class="lede">Файл CSV для книги «Тайминг». Сохраните его в папку Dropbox, затем в Excel нажмите «Импорт из CSV» на листе «2026».</p>
+
+      <div class="seg" role="radiogroup" aria-label="Что выгружать">
+        <button class="seg-btn is-active" type="button" data-mode="new" role="radio" aria-checked="true">Новые</button>
+        <button class="seg-btn" type="button" data-mode="month" role="radio" aria-checked="false">Этот месяц</button>
+        <button class="seg-btn" type="button" data-mode="all" role="radio" aria-checked="false">Всё</button>
+      </div>
+
+      <div class="export-card">
+        <div class="export-row">
+          <span id="exportCount">0 записей</span>
+          <strong id="exportMinutes">0 мин</strong>
+        </div>
+        <p class="muted" id="exportPeriod">—</p>
+        <p class="fine" id="exportLive" hidden>Текущий интервал попадёт в файл после остановки.</p>
+        <button class="primary wide" id="exportBtn" type="button">Скачать CSV</button>
+        <button class="ghost wide" id="copyBtn" type="button">Скопировать CSV</button>
+        <p class="fine">Уже выгруженные записи помечаются и в режим «Новые» больше не попадают.</p>
+      </div>
+
+      <details class="more">
+        <summary>Резервная копия и восстановление</summary>
+        <div class="more-body">
+          <p class="fine">Данные хранятся только в этом браузере. Копия защитит их при очистке данных или смене телефона.</p>
+          <button class="ghost wide" id="backupBtn" type="button">Скачать копию (JSON)</button>
+          <label class="ghost wide file-btn">
+            Восстановить из копии
+            <input type="file" id="restoreInput" accept="application/json,.json">
+          </label>
+        </div>
+      </details>
+
+      <details class="more" id="installHelp">
+        <summary>Установка на телефон</summary>
+        <div class="more-body">
+          <p class="fine">Откройте адрес приложения в Chrome, меню ⋮ → «Установить приложение» или «Добавить на главный экран». После установки приложение работает без интернета.</p>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <nav class="tabs" aria-label="Разделы">
+    <button class="tab is-active" id="tab-today" type="button" data-view="today" aria-selected="true">Сейчас</button>
+    <button class="tab" id="tab-journal" type="button" data-view="journal" aria-selected="false">Журнал</button>
+    <button class="tab" id="tab-export" type="button" data-view="export" aria-selected="false">Выгрузка</button>
+  </nav>
+</div>
+
+<dialog class="sheet" id="entryDialog">
+  <form id="entryForm" novalidate>
+    <header class="sheet-head">
+      <h2 id="dialogTitle">Интервал</h2>
+      <button class="icon-btn" type="button" id="dialogClose" aria-label="Закрыть">×</button>
+    </header>
+
+    <div class="grid2">
+      <label class="field">Дата
+        <input type="date" id="fDate" required>
+      </label>
+      <label class="field">Начало
+        <input type="time" id="fStart" required>
+      </label>
+    </div>
+
+    <label class="field">Окончание <span class="hint">пусто — интервал идёт</span>
+      <input type="time" id="fEnd">
+    </label>
+
+    <label class="field">Деятельность
+      <textarea id="fActivity" rows="2" required placeholder="Например: Проверка @"></textarea>
+    </label>
+
+    <label class="field">Примечание <span class="hint">необязательно</span>
+      <textarea id="fNote" rows="2"></textarea>
+    </label>
+
+    <p class="form-error" id="formError" hidden></p>
+
+    <div class="sheet-actions">
+      <button class="danger-ghost" type="button" id="btnDelete">Удалить</button>
+      <button class="primary" type="submit">Сохранить</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
